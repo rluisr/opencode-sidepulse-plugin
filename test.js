@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import plugin from "./index.js"
@@ -88,6 +89,61 @@ await shows(ROLL, "a session is running at unload")
 cleanup()
 plugin.setup({ options: { root }, event: { subscribe: stream } })()
 await shows(COMPLETE, "a session that ended while the plugin was unloaded is not counted")
+
+let remote
+let forms = [{ id: "frm_r", sessionID: "ses_r" }]
+const server = createServer((req, res) => {
+  if (req.headers.authorization !== `Basic ${Buffer.from("opencode:ひみつ").toString("base64")}`) return res.writeHead(401).end()
+  const { pathname, searchParams } = new URL(req.url, "http://remote")
+  if (pathname === "/api/event" && searchParams.getAll("types").includes("form.created")) {
+    remote = res
+    return res.write(': heartbeat\n\ndata: {"id":"evt_r0","type":"server.connected","data":{}}\n\n')
+  }
+  const loaded = searchParams.get("location[directory]") === "/work"
+  const body = {
+    "/api/session/active": { data: {} },
+    "/api/debug/location": [{ directory: "/work" }],
+    "/api/form": loaded && { data: forms },
+    "/api/permission/request": loaded && { data: [] },
+  }[pathname]
+  res.writeHead(body ? 200 : 404).end(JSON.stringify(body))
+})
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+const url = `http://127.0.0.1:${server.address().port}`
+const servers = [{ url, password: "ひみつ" }]
+const push = (type, data) => remote.write(`data: ${JSON.stringify({ id: `evt_r${count++}`, type, data })}\n\n`)
+
+const following = plugin.setup({ options: { root, servers }, event: { subscribe: stream } })
+plugin.setup({ options: { root, servers }, event: { subscribe: stream } })()
+await shows(AMBER, "a form of an idle remote session was already pending when the plugin connected")
+forms = []
+push("form.replied", { id: "frm_r", sessionID: "ses_r" })
+await shows(COMPLETE, "the remote question was answered")
+push("session.execution.started", { sessionID: "ses_r" })
+await shows(ROLL, "a remote session is running")
+push("session.text.delta", { sessionID: "ses_r" })
+push("session.execution.succeeded", { sessionID: "ses_r" })
+await shows(COMPLETE, "the remote session finished")
+emit("session.execution.started", { sessionID: "ses_g" })
+push("permission.asked", { id: "per_r", sessionID: "ses_r" })
+await shows(AMBER, "a remote permission is pending while a local session runs")
+
+const local = plugin.setup({ options: { root }, event: { subscribe: stream } })
+following()
+await shows(ROLL, "a server dropped from the options is not counted while another instance stays loaded")
+
+forms = [{ id: "frm_r", sessionID: "ses_r" }]
+const rejected = plugin.setup({ options: { root, servers: [{ url, password: "wrong" }] }, event: { subscribe: stream } })
+const corrected = plugin.setup({ options: { root, servers }, event: { subscribe: stream } })
+await shows(AMBER, "a password corrected in the options replaces the rejected connection")
+server.close()
+remote.destroy()
+await shows(ROLL, "a remote server that went away is not counted, the local session still is")
+rejected()
+corrected()
+local()
+plugin.setup({ options: { root, servers: [{ url }] }, event: { subscribe: stream } })()
+await shows(COMPLETE, "a server listed without a password is accepted")
 
 assert.equal(existsSync(join(root, "Other", "LEDS.LED")), false, "only volumes that already have LEDS.LED are written")
 console.log("ok")
