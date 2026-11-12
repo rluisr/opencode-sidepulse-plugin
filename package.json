@@ -1,0 +1,11 @@
+{
+  "name": "opencode-sidepulse-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./index.js"
+  },
+  "scripts": {
+    "test": "node test.js"
+  }
+}
