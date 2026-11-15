@@ -187,6 +187,12 @@ async function follow(server, root, signal) {
   }
 }
 
+function drop(url) {
+  shared.remotes.get(url).controller.abort()
+  shared.remotes.delete(url)
+  shared.sources.delete(url)
+}
+
 export default {
   id: "sidepulse",
 
@@ -208,7 +214,8 @@ export default {
     for (const { url, password } of servers) {
       let remote = shared.remotes.get(url)
       // Not one connection per setup: every location would open its own stream to each server.
-      if (!remote || remote.password !== password) {
+      // Not the follower kept while nothing was loaded: it can be an older copy of this file.
+      if (!remote?.count || remote.password !== password) {
         remote?.controller.abort()
         remote = { password, controller: new AbortController(), count: remote?.count ?? 0 }
         shared.remotes.set(url, remote)
@@ -216,19 +223,22 @@ export default {
       }
       remote.count++
     }
+    // Not followed past the next load: a server dropped from the options while nothing was loaded would stay counted.
+    for (const [url, remote] of shared.remotes) if (!remote.count) drop(url)
     return () => {
       controller.abort()
-      // Not held until the last instance unloads: a server dropped from the options would stay counted.
+      const last = !--shared.subscribers
       for (const { url } of servers) {
-        const remote = shared.remotes.get(url)
-        if (--remote.count) continue
-        remote.controller.abort()
-        shared.remotes.delete(url)
-        shared.sources.delete(url)
+        // Not held until the last instance unloads: a server dropped from the options would stay counted.
+        // Not stopped with the last instance either: OpenCode unloads the plugin from an idle location,
+        // and the remote's sessions would stop being shown.
+        // ponytail: a removed plugin keeps following until the service restarts; a standalone daemon if that matters.
+        if (--shared.remotes.get(url).count || last) continue
+        drop(url)
       }
       // Not kept across a gap with no subscriber: events are not replayed, so a
       // session that ended meanwhile would stay counted as running forever.
-      if (!--shared.subscribers) shared.sources.delete("local")
+      if (last) shared.sources.delete("local")
       sync(root)
     }
   },
